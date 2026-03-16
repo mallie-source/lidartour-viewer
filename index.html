@@ -59,16 +59,12 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-// ─── Config ───────────────────────────────────────────────────────────────────
 const SUPABASE_URL = 'https://btxfsgfqlvdovahcdlds.supabase.co'
-const SUPABASE_KEY = 'sb_publishable_Cl29jl6DmKs5R4EcyPTzhA_Cf92GXse'
 const BUCKET = 'scans'
 
-// Get tour ID from URL: ?tour=XXXX
 const params = new URLSearchParams(window.location.search)
 const TOUR_ID = params.get('tour')
 
-// ─── Three.js setup ───────────────────────────────────────────────────────────
 const canvas = document.getElementById('canvas')
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
 renderer.setSize(window.innerWidth, window.innerHeight)
@@ -80,22 +76,22 @@ const camera = new THREE.PerspectiveCamera(
 )
 camera.position.set(0, 0, 0)
 
-// Panorama sphere — user sits inside it
 const geometry = new THREE.SphereGeometry(500, 60, 40)
-geometry.scale(-1, 1, 1)  // flip inside out
+geometry.scale(-1, 1, 1)
 const material = new THREE.MeshBasicMaterial()
 const sphere = new THREE.Mesh(geometry, material)
 scene.add(sphere)
 
-// ─── Mouse/touch drag ─────────────────────────────────────────────────────────
 let isDragging = false
 let previousMouse = { x: 0, y: 0 }
 let spherical = { theta: 0, phi: Math.PI / 2 }
 
 function onPointerDown(e) {
   isDragging = true
-  previousMouse = { x: e.clientX || e.touches[0].clientX,
-                    y: e.clientY || e.touches[0].clientY }
+  previousMouse = {
+    x: e.clientX || e.touches[0].clientX,
+    y: e.clientY || e.touches[0].clientY
+  }
 }
 
 function onPointerMove(e) {
@@ -103,11 +99,9 @@ function onPointerMove(e) {
   const x = e.clientX || e.touches?.[0]?.clientX
   const y = e.clientY || e.touches?.[0]?.clientY
   if (x === undefined) return
-
   const dx = (x - previousMouse.x) * 0.005
   const dy = (y - previousMouse.y) * 0.005
   previousMouse = { x, y }
-
   spherical.theta -= dx
   spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi + dy))
   updateCamera()
@@ -135,30 +129,34 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix()
 })
 
-// ─── Render loop ──────────────────────────────────────────────────────────────
 function animate() {
   requestAnimationFrame(animate)
   renderer.render(scene, camera)
 }
 animate()
 
-// ─── Supabase helpers ─────────────────────────────────────────────────────────
-function storageURL(path) {
+function publicURL(path) {
   return `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${path}`
 }
 
 async function fetchJSON(path) {
-  const url = storageURL(path)
-  const res = await fetch(url, {
-    headers: { apikey: SUPABASE_KEY }
-  })
-  if (!res.ok) throw new Error(`Failed to fetch ${path}: ${res.status}`)
+  const url = publicURL(path)
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`)
   return res.json()
 }
 
-// ─── Tour loading ─────────────────────────────────────────────────────────────
+function loadImage(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+    img.onload = () => resolve(img)
+    img.onerror = () => reject(new Error('Failed to load image: ' + url))
+    img.src = url
+  })
+}
+
 let tourData = null
-let currentNodeIndex = 0
 
 async function loadTour() {
   if (!TOUR_ID) {
@@ -170,10 +168,10 @@ async function loadTour() {
   try {
     document.getElementById('loading-text').textContent = 'Loading tour data…'
     tourData = await fetchJSON(`${TOUR_ID}/tour.json`)
+    console.log('Tour data:', tourData)
 
     buildNodeButtons()
     await loadNode(0)
-
     document.getElementById('loading').style.display = 'none'
   } catch (err) {
     document.getElementById('loading-text').textContent =
@@ -185,9 +183,7 @@ async function loadTour() {
 function buildNodeButtons() {
   const ui = document.getElementById('ui')
   ui.innerHTML = ''
-
   if (!tourData?.nodes?.length) return
-
   tourData.nodes.forEach((node, i) => {
     const btn = document.createElement('button')
     btn.className = 'node-btn' + (i === 0 ? ' active' : '')
@@ -200,40 +196,42 @@ function buildNodeButtons() {
 async function loadNode(index) {
   if (!tourData?.nodes?.[index]) return
 
-  currentNodeIndex = index
   const node = tourData.nodes[index]
 
-  // Update button states
   document.querySelectorAll('.node-btn').forEach((btn, i) => {
     btn.classList.toggle('active', i === index)
   })
 
   document.getElementById('status').textContent = 'Loading panorama…'
 
-  // Load all frames for this node
   const frames = node.frameRelativePaths || []
+  console.log('Loading frames:', frames)
+
   if (frames.length === 0) {
     document.getElementById('status').textContent = 'No frames for this node.'
     return
   }
 
-  // Create a canvas to stitch frames into a panorama
-  const panoCanvas = document.createElement('canvas')
-  const frameCount = frames.length
   const frameWidth = 1920
   const frameHeight = 1440
-  panoCanvas.width = frameWidth * frameCount
+  const panoCanvas = document.createElement('canvas')
+  panoCanvas.width = frameWidth * frames.length
   panoCanvas.height = frameHeight
   const ctx = panoCanvas.getContext('2d')
 
-  // Load each frame and draw side by side
   for (let i = 0; i < frames.length; i++) {
-    const framePath = `${TOUR_ID}/${frames[i]}`
-    const img = await loadImage(storageURL(framePath))
+    document.getElementById('loading').style.display = 'flex'
+    document.getElementById('loading-text').textContent =
+      `Loading frame ${i + 1} of ${frames.length}…`
+
+    const imageURL = publicURL(`${TOUR_ID}/${frames[i]}`)
+    console.log('Fetching:', imageURL)
+    const img = await loadImage(imageURL)
     ctx.drawImage(img, i * frameWidth, 0, frameWidth, frameHeight)
   }
 
-  // Apply to sphere
+  document.getElementById('loading').style.display = 'none'
+
   const texture = new THREE.CanvasTexture(panoCanvas)
   texture.mapping = THREE.EquirectangularReflectionMapping
   material.map = texture
@@ -244,17 +242,6 @@ async function loadNode(index) {
     `${label} — Drag to look around`
 }
 
-function loadImage(url) {
-  return new Promise((resolve, reject) => {
-    const img = new Image()
-    img.crossOrigin = 'anonymous'
-    img.onload = () => resolve(img)
-    img.onerror = () => reject(new Error('Failed to load: ' + url))
-    img.src = url
-  })
-}
-
-// ─── Start ────────────────────────────────────────────────────────────────────
 loadTour()
 </script>
 </body>
