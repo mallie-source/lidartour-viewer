@@ -63,7 +63,7 @@ const SUPABASE_URL = 'https://btxfsgfqlvdovahcdlds.supabase.co'
 const BUCKET = 'scans'
 
 const params = new URLSearchParams(window.location.search)
-const TOUR_ID = '7EAC001A-287C-4279-8559-21A9D54C1F1A'
+const TOUR_ID = params.get('tour')
 
 const canvas = document.getElementById('canvas')
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
@@ -89,15 +89,15 @@ let spherical = { theta: 0, phi: Math.PI / 2 }
 function onPointerDown(e) {
   isDragging = true
   previousMouse = {
-    x: e.clientX || e.touches[0].clientX,
-    y: e.clientY || e.touches[0].clientY
+    x: e.clientX !== undefined ? e.clientX : e.touches[0].clientX,
+    y: e.clientY !== undefined ? e.clientY : e.touches[0].clientY
   }
 }
 
 function onPointerMove(e) {
   if (!isDragging) return
-  const x = e.clientX || e.touches?.[0]?.clientX
-  const y = e.clientY || e.touches?.[0]?.clientY
+  const x = e.clientX !== undefined ? e.clientX : e.touches?.[0]?.clientX
+  const y = e.clientY !== undefined ? e.clientY : e.touches?.[0]?.clientY
   if (x === undefined) return
   const dx = (x - previousMouse.x) * 0.005
   const dy = (y - previousMouse.y) * 0.005
@@ -151,7 +151,7 @@ function loadImage(url) {
     const img = new Image()
     img.crossOrigin = 'anonymous'
     img.onload = () => resolve(img)
-    img.onerror = () => reject(new Error('Failed to load image: ' + url))
+    img.onerror = () => reject(new Error('Failed to load: ' + url))
     img.src = url
   })
 }
@@ -166,9 +166,9 @@ async function loadTour() {
   }
 
   try {
-    document.getElementById('loading-text').textContent = 'Loading tour data…'
-    tourData = await fetchJSON(`${TOUR_ID}/tour.json`)
-    console.log('Tour data:', tourData)
+    document.getElementById('loading-text').textContent = 'Loading tour…'
+    tourData = await fetchJSON(`${TOUR_ID}/processed_tour.json`)
+    console.log('Tour loaded:', tourData)
 
     buildNodeButtons()
     await loadNode(0)
@@ -202,44 +202,37 @@ async function loadNode(index) {
     btn.classList.toggle('active', i === index)
   })
 
-  document.getElementById('status').textContent = 'Loading panorama…'
+  document.getElementById('loading').style.display = 'flex'
+  document.getElementById('loading-text').textContent = 'Loading panorama…'
 
-  const frames = node.frameRelativePaths || []
-  console.log('Loading frames:', frames)
-
-  if (frames.length === 0) {
-    document.getElementById('status').textContent = 'No frames for this node.'
+  const panoramaPath = node.panoramaPath
+  if (!panoramaPath) {
+    document.getElementById('loading-text').textContent =
+      'No panorama found for this node.'
     return
   }
 
-  const frameWidth = 1920
-  const frameHeight = 1440
-  const panoCanvas = document.createElement('canvas')
-  panoCanvas.width = frameWidth * frames.length
-  panoCanvas.height = frameHeight
-  const ctx = panoCanvas.getContext('2d')
+  const imageURL = publicURL(`${TOUR_ID}/${panoramaPath}`)
+  console.log('Loading panorama:', imageURL)
 
-  for (let i = 0; i < frames.length; i++) {
-    document.getElementById('loading').style.display = 'flex'
-    document.getElementById('loading-text').textContent =
-      `Loading frame ${i + 1} of ${frames.length}…`
-
-    const imageURL = publicURL(`${TOUR_ID}/${frames[i]}`)
-    console.log('Fetching:', imageURL)
+  try {
     const img = await loadImage(imageURL)
-    ctx.drawImage(img, i * frameWidth, 0, frameWidth, frameHeight)
+
+    const texture = new THREE.Texture(img)
+    texture.needsUpdate = true
+    material.map = texture
+    material.needsUpdate = true
+
+    document.getElementById('loading').style.display = 'none'
+
+    const label = node.roomLabel || `Room ${index + 1}`
+    document.getElementById('status').textContent =
+      `${label} — Drag to look around`
+  } catch (err) {
+    document.getElementById('loading-text').textContent =
+      'Failed to load panorama: ' + err.message
+    console.error(err)
   }
-
-  document.getElementById('loading').style.display = 'none'
-
-  const texture = new THREE.CanvasTexture(panoCanvas)
-  texture.mapping = THREE.EquirectangularReflectionMapping
-  material.map = texture
-  material.needsUpdate = true
-
-  const label = node.roomLabel || `Room ${index + 1}`
-  document.getElementById('status').textContent =
-    `${label} — Drag to look around`
 }
 
 loadTour()
