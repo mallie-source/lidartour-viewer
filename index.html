@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LiDAR Tour Viewer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; overflow: hidden; font-family: sans-serif; }
+  #canvas { width: 100vw; height: 100vh; display: block; }
+  #ui {
+    position: fixed; bottom: 24px; left: 50%;
+    transform: translateX(-50%);
+    display: flex; gap: 12px; align-items: center;
+  }
+  #status {
+    position: fixed; top: 20px; left: 50%;
+    transform: translateX(-50%);
+    color: white; background: rgba(0,0,0,0.6);
+    padding: 8px 16px; border-radius: 20px;
+    font-size: 14px; pointer-events: none;
+  }
+  .node-btn {
+    background: rgba(255,255,255,0.15);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,0.3);
+    color: white; padding: 10px 20px;
+    border-radius: 24px; cursor: pointer;
+    font-size: 14px; transition: background 0.2s;
+  }
+  .node-btn:hover { background: rgba(255,255,255,0.3); }
+  .node-btn.active { background: rgba(255,255,255,0.9); color: #000; }
+  #loading {
+    position: fixed; inset: 0;
+    background: #000; display: flex;
+    align-items: center; justify-content: center;
+    flex-direction: column; gap: 16px; color: white;
+  }
+  .spinner {
+    width: 40px; height: 40px;
+    border: 3px solid rgba(255,255,255,0.2);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <div id="loading-text">Loading tour…</div>
+</div>
+
+<canvas id="canvas"></canvas>
+<div id="status">Drag to look around</div>
+<div id="ui"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ─── Config ───────────────────────────────────────────────────────────────────
+const SUPABASE_URL = 'https://btxfsgfqlvdovahcdlds.supabase.co'
+const SUPABASE_KEY = 'sb_publishable_Cl29jl6DmKs5R4EcyPTzhA_Cf92GXse'
+const BUCKET = 'scans'
+
+// Get tour ID from URL: ?tour=XXXX
+const params = new URLSearchParams(window.location.search)
+const TOUR_ID = params.get('tour')
+
+// ─── Three.js setup ───────────────────────────────────────────────────────────
+const canvas = document.getElementById('canvas')
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
+renderer.setSize(window.innerWidth, window.innerHeight)
+renderer.setPixelRatio(window.devicePixelRatio)
+
+const scene = new THREE.Scene()
+const camera = new THREE.PerspectiveCamera(
+  75, window.innerWidth / window.innerHeight, 0.1, 1000
+)
+camera.position.set(0, 0, 0)
+
+// Panorama sphere — user sits inside it
+const geometry = new THREE.SphereGeometry(500, 60, 40)
+geometry.scale(-1, 1, 1)  // flip inside out
+const material = new THREE.MeshBasicMaterial()
+const sphere = new THREE.Mesh(geometry, material)
+scene.add(sphere)
+
+// ─── Mouse/touch drag ─────────────────────────────────────────────────────────
+let isDragging = false
+let previousMouse = { x: 0, y: 0 }
+let spherical = { theta: 0, phi: Math.PI / 2 }
+
+function onPointerDown(e) {
+  isDragging = true
+  previousMouse = { x: e.clientX || e.touches[0].clientX,
+                    y: e.clientY || e.touches[0].clientY }
+}
+
+function onPointerMove(e) {
+  if (!isDragging) return
+  const x = e.clientX || e.touches?.[0]?.clientX
+  const y = e.clientY || e.touches?.[0]?.clientY
+  if (x === undefined) return
+
+  const dx = (x - previousMouse.x) * 0.005
+  const dy = (y - previousMouse.y) * 0.005
+  previousMouse = { x, y }
+
+  spherical.theta -= dx
+  spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi + dy))
+  updateCamera()
+}
+
+function onPointerUp() { isDragging = false }
+
+function updateCamera() {
+  const x = 500 * Math.sin(spherical.phi) * Math.cos(spherical.theta)
+  const y = 500 * Math.cos(spherical.phi)
+  const z = 500 * Math.sin(spherical.phi) * Math.sin(spherical.theta)
+  camera.lookAt(x, y, z)
+}
+
+canvas.addEventListener('mousedown', onPointerDown)
+canvas.addEventListener('mousemove', onPointerMove)
+canvas.addEventListener('mouseup', onPointerUp)
+canvas.addEventListener('touchstart', onPointerDown)
+canvas.addEventListener('touchmove', onPointerMove)
+canvas.addEventListener('touchend', onPointerUp)
+
+window.addEventListener('resize', () => {
+  renderer.setSize(window.innerWidth, window.innerHeight)
+  camera.aspect = window.innerWidth / window.innerHeight
+  camera.updateProjectionMatrix()
+})
+
+// ─── Render loop ──────────────────────────────────────────────────────────────
+function animate() {
+  requestAnimationFrame(animate)
+  renderer.render(scene, camera)
+}
+animate()
+
+// ─── Supabase helpers ─────────────────────────────────────────────────────────
+function storageURL(path) {
+  return `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${path}`
+}
+
+async function fetchJSON(path) {
+  const url = storageURL(path)
+  const res = await fetch(url, {
+    headers: { apikey: SUPABASE_KEY }
+  })
+  if (!res.ok) throw new Error(`Failed to fetch ${path}: ${res.status}`)
+  return res.json()
+}
+
+// ─── Tour loading ─────────────────────────────────────────────────────────────
+let tourData = null
+let currentNodeIndex = 0
+
+async function loadTour() {
+  if (!TOUR_ID) {
+    document.getElementById('loading-text').textContent =
+      'No tour ID. Add ?tour=YOUR_TOUR_ID to the URL.'
+    return
+  }
+
+  try {
+    document.getElementById('loading-text').textContent = 'Loading tour data…'
+    tourData = await fetchJSON(`${TOUR_ID}/tour.json`)
+
+    buildNodeButtons()
+    await loadNode(0)
+
+    document.getElementById('loading').style.display = 'none'
+  } catch (err) {
+    document.getElementById('loading-text').textContent =
+      'Failed to load tour: ' + err.message
+    console.error(err)
+  }
+}
+
+function buildNodeButtons() {
+  const ui = document.getElementById('ui')
+  ui.innerHTML = ''
+
+  if (!tourData?.nodes?.length) return
+
+  tourData.nodes.forEach((node, i) => {
+    const btn = document.createElement('button')
+    btn.className = 'node-btn' + (i === 0 ? ' active' : '')
+    btn.textContent = node.roomLabel || `Room ${i + 1}`
+    btn.onclick = () => loadNode(i)
+    ui.appendChild(btn)
+  })
+}
+
+async function loadNode(index) {
+  if (!tourData?.nodes?.[index]) return
+
+  currentNodeIndex = index
+  const node = tourData.nodes[index]
+
+  // Update button states
+  document.querySelectorAll('.node-btn').forEach((btn, i) => {
+    btn.classList.toggle('active', i === index)
+  })
+
+  document.getElementById('status').textContent = 'Loading panorama…'
+
+  // Load all frames for this node
+  const frames = node.frameRelativePaths || []
+  if (frames.length === 0) {
+    document.getElementById('status').textContent = 'No frames for this node.'
+    return
+  }
+
+  // Create a canvas to stitch frames into a panorama
+  const panoCanvas = document.createElement('canvas')
+  const frameCount = frames.length
+  const frameWidth = 1920
+  const frameHeight = 1440
+  panoCanvas.width = frameWidth * frameCount
+  panoCanvas.height = frameHeight
+  const ctx = panoCanvas.getContext('2d')
+
+  // Load each frame and draw side by side
+  for (let i = 0; i < frames.length; i++) {
+    const framePath = `${TOUR_ID}/${frames[i]}`
+    const img = await loadImage(storageURL(framePath))
+    ctx.drawImage(img, i * frameWidth, 0, frameWidth, frameHeight)
+  }
+
+  // Apply to sphere
+  const texture = new THREE.CanvasTexture(panoCanvas)
+  texture.mapping = THREE.EquirectangularReflectionMapping
+  material.map = texture
+  material.needsUpdate = true
+
+  const label = node.roomLabel || `Room ${index + 1}`
+  document.getElementById('status').textContent =
+    `${label} — Drag to look around`
+}
+
+function loadImage(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+    img.onload = () => resolve(img)
+    img.onerror = () => reject(new Error('Failed to load: ' + url))
+    img.src = url
+  })
+}
+
+// ─── Start ────────────────────────────────────────────────────────────────────
+loadTour()
+</script>
+</body>
+</html>
